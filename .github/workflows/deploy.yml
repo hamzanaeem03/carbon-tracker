@@ -35,20 +35,25 @@ jobs:
       with:
         node-version: '20'
         cache: 'npm'
+        cache-dependency-path: backend/package-lock.json
 
     - name: Install dependencies
+      working-directory: ./backend
       run: npm ci
 
     - name: Run linter
+      working-directory: ./backend
       run: npm run lint
 
     - name: Run tests
+      working-directory: ./backend
       run: npm test -- --coverage --coverageReporters=lcov
       env:
         NODE_ENV: test
         MONGO_URI: mongodb://localhost:27017/carbon_test
 
     - name: Generate test report
+      working-directory: ./backend
       run: |
         mkdir -p reports
         npx jest --coverage --coverageDirectory=reports/coverage
@@ -58,7 +63,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: ci-reports
-        path: reports/
+        path: backend/reports/
 
     - name: Comment PR with coverage
       if: github.event_name == 'pull_request'
@@ -66,7 +71,7 @@ jobs:
       with:
         script: |
           const fs = require('fs');
-          const coverage = fs.readFileSync('./reports/coverage/coverage-summary.json', 'utf8');
+          const coverage = fs.readFileSync('./backend/reports/coverage/coverage-summary.json', 'utf8');
           const data = JSON.parse(coverage);
           const total = data.total;
           const comment = `
@@ -110,6 +115,7 @@ jobs:
         node-version: '20'
 
     - name: Install dependencies
+      working-directory: ./backend
       run: npm ci --production
 
     - name: Simulate QA deployment
@@ -154,6 +160,7 @@ jobs:
         node-version: '20'
 
     - name: Install dependencies
+      working-directory: ./backend
       run: npm ci --production
 
     - name: Simulate Production deployment
