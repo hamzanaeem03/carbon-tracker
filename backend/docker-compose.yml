@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - carbon-network
+
+  backend:
+    build: .
+    ports:
+      - "4000:4000"
+    env_file:
+      - .env
+    depends_on:
+      - mongo
+    networks:
+      - carbon-network
+
+  mongo:
+    image: mongo:6
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - carbon-network
+
+volumes:
+  mongo_data:
+
+networks:
+  carbon-network:

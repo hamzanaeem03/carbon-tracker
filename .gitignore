@@ -26,3 +26,16 @@ Thumbs.db
 
 # Optional: If you want to ignore the frontend build folder (assuming it exists)
 frontend/dist/
+
+
+
+dist/
+coverage/
+reports/
+
+.env.local
+.DS_Store
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
