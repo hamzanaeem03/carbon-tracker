@@ -1,4 +1,5 @@
 // Simple Express backend with MongoDB + Prometheus metrics
+//server.js
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
