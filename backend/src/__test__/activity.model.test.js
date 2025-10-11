@@ -2,7 +2,7 @@ const Activity = require('../models/activity');
 
 describe('Activity Model', () => {
   test('should have required schema fields', () => {
-    const schema = Activity.schema;
+    const { schema } = Activity;
     expect(schema.paths.userId).toBeDefined();
     expect(schema.paths.type).toBeDefined();
     expect(schema.paths.co2Kg).toBeDefined();
@@ -10,12 +10,12 @@ describe('Activity Model', () => {
   });
 
   test('userId should be required', () => {
-    const schema = Activity.schema;
+    const { schema } = Activity;
     expect(schema.paths.userId.isRequired).toBeDefined();
   });
 
   test('type should be required', () => {
-    const schema = Activity.schema;
+    const { schema } = Activity;
     expect(schema.paths.type.isRequired).toBeDefined();
   });
 });
