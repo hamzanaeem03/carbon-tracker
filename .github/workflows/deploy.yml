@@ -10,6 +10,10 @@ concurrency:
   group: deploy-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: carbon-tracker-backend
+
 jobs:
   ci:
     name: Continuous Integration
@@ -88,8 +92,8 @@ jobs:
             body: comment
           });
 
-  deploy_qa:
-    name: Deploy to QA Environment
+  build_docker_dev:
+    name: Build Docker Image (Dev)
     runs-on: ubuntu-latest
     needs: ci
     if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
@@ -98,83 +102,88 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Download build artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: ci-reports
-        path: reports/
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
 
-    - name: Display test coverage
-      run: |
-        echo "Test coverage report:"
-        cat reports/coverage/coverage-summary.json | jq '.'
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-
-    - name: Install dependencies
+    - name: Build Docker image
       working-directory: ./backend
-      run: npm ci --production
-
-    - name: Simulate QA deployment
       run: |
-        echo "Deploying to QA environment..."
-        echo "Using artifact from CI job:"
-        ls -la reports/
-        echo "Running health checks..."
-        echo "Successfully deployed to QA environment"
+        docker build -t carbon-tracker-backend:dev-${{ github.sha }} .
+        echo "Docker image built: carbon-tracker-backend:dev-${{ github.sha }}"
 
-    - name: Send QA notification
-      if: success()
+    - name: Run Docker container test
       run: |
-        echo "✅ QA deployment successful!"
-        echo "Environment: QA"
-        echo "Branch: dev"
+        docker run --rm carbon-tracker-backend:dev-${{ github.sha }} node -e "console.log('Docker image is valid')"
 
-  deploy_prod:
-    name: Deploy to Production Environment
+    - name: Dev deployment notification
+      run: |
+        echo "Dev branch deployment completed"
+        echo "Docker image ready: carbon-tracker-backend:dev-${{ github.sha }}"
+        echo "For deployment, push to main branch"
+
+  build_and_deploy_prod:
+    name: Build Docker & Deploy to AWS (Production)
     runs-on: ubuntu-latest
     needs: ci
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Download build artifacts
-      uses: actions/download-artifact@v4
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
       with:
-        name: ci-reports
-        path: reports/
+        role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubActionsRole
+        aws-region: ${{ env.AWS_REGION }}
 
-    - name: Display test coverage
-      run: |
-        echo "Test coverage report:"
-        cat reports/coverage/coverage-summary.json | jq '.'
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-
-    - name: Install dependencies
+    - name: Build, tag, and push image to Amazon ECR
       working-directory: ./backend
-      run: npm ci --production
-
-    - name: Simulate Production deployment
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
       run: |
-        echo "🚀 Deploying to PRODUCTION environment..."
-        echo "Using artifact from CI job:"
-        ls -la reports/
-        echo "Running health checks..."
-        echo "✅ Successfully deployed to PRODUCTION environment"
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
-    - name: Send deployment notification
+    - name: Deploy to EC2 (Production)
+      env:
+        IMAGE_TAG: ${{ github.sha }}
+        INSTANCE_ID: ${{ secrets.PROD_INSTANCE_ID }}
+      run: |
+        aws ssm send-command \
+          --document-name "AWS-RunShellScript" \
+          --parameters "commands=[
+            'cd /home/ec2-user/carbon-tracker',
+            'aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com',
+            'docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/carbon-tracker-backend:$IMAGE_TAG',
+            'docker stop carbon-tracker-prod || true',
+            'docker rm carbon-tracker-prod || true',
+            'docker run -d --name carbon-tracker-prod --restart always -p 4000:4000 --env-file .env.production ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/carbon-tracker-backend:$IMAGE_TAG'
+          ]" \
+          --instance-ids "$INSTANCE_ID"
+
+    - name: Verify deployment
+      run: |
+        echo "Production deployment initiated"
+        echo "Docker image: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/carbon-tracker-backend:${{ github.sha }}"
+        echo "EC2 Instance: ${{ secrets.PROD_INSTANCE_ID }}"
+        echo "Check EC2 instance logs: docker logs carbon-tracker-prod"
+
+    - name: Send Production notification
       if: success()
       run: |
-        echo "✅ Production deployment successful!"
+        echo "Production Deployment Successful"
         echo "Environment: Production"
         echo "Branch: main"
         echo "Version: ${{ github.sha }}"
