@@ -1,5 +1,4 @@
 // Simple Express backend with MongoDB + Prometheus metrics
-// server.js
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -7,12 +6,10 @@ const bodyParser = require('body-parser');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
-const {
-  collectDefaultMetrics, register, Histogram, Gauge, Counter,
-} = require('prom-client');
+const { collectDefaultMetrics, register, Histogram, Gauge, Counter } = require('prom-client');
 const Activity = require('./models/activity');
-const { initMetrics, httpRequestDuration } = require('./metrics');
-
+const metrics = require('./metrics');
+const { httpRequestDuration } = metrics;
 const PORT = process.env.PORT || 4000;
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/carbon_dev';
 const app = express();
@@ -24,7 +21,7 @@ app.use(morgan('dev'));
 
 // init prom-client defaults & custom metrics
 collectDefaultMetrics();
-initMetrics(); // setup custom metrics
+metrics.initMetrics();
 
 // connect mongoose (dev-friendly)
 mongoose.connect(MONGO_URI, {
@@ -35,14 +32,10 @@ mongoose.connect(MONGO_URI, {
 
 // ----- Helpers: emission factors -----
 const EMISSION_FACTORS = {
-  transport: {
-    car: 0.192, bus: 0.089, train: 0.041, flight: 0.255,
-  }, // kg per km
+  transport: { car: 0.192, bus: 0.089, train: 0.041, flight: 0.255 }, // kg per km
   electricity: { default: 0.475 }, // kg per kWh
-  diet: {
-    beef: 27, chicken: 6.9, vegetarian: 2.5, vegan: 1.5,
-  }, // kg per meal
-  waste: { default: 0.5 }, // kg CO2 per kg waste
+  diet: { beef: 27, chicken: 6.9, vegetarian: 2.5, vegan: 1.5 }, // kg per meal
+  waste: { default: 0.5 } // kg CO2 per kg waste
 };
 
 function calculateCO2(activity) {
@@ -51,13 +44,13 @@ function calculateCO2(activity) {
   if (type === 'transport') {
     const factor = EMISSION_FACTORS.transport[subtype] ?? 0;
     return factor * Number(value || 0);
-  } if (type === 'electricity') {
+  } else if (type === 'electricity') {
     const factor = EMISSION_FACTORS.electricity.default;
     return factor * Number(value || 0);
-  } if (type === 'diet') {
+  } else if (type === 'diet') {
     const factor = EMISSION_FACTORS.diet[subtype] ?? 0;
     return factor * Number(value || 0); // value = number of meals
-  } if (type === 'waste') {
+  } else if (type === 'waste') {
     const factor = EMISSION_FACTORS.waste.default;
     return factor * Number(value || 0); // value = kg of waste
   }
@@ -84,9 +77,7 @@ app.get('/metrics', async (req, res) => {
 app.post('/api/activities', async (req, res) => {
   const end = httpRequestDuration.startTimer({ route: '/api/activities', method: 'POST' });
   try {
-    const {
-      userId, type, subtype, value, timestamp,
-    } = req.body;
+    const { userId, type, subtype, value, timestamp } = req.body;
     if (!userId || !type) return res.status(400).json({ error: 'userId and type required' });
 
     const co2Kg = calculateCO2({ type, subtype, value });
@@ -96,15 +87,15 @@ app.post('/api/activities', async (req, res) => {
       subtype,
       value,
       co2Kg,
-      timestamp: timestamp ? new Date(timestamp) : new Date(),
+      timestamp: timestamp ? new Date(timestamp) : new Date()
     });
     await activity.save();
 
     // update metrics
     const metrics = require('./metrics');
     metrics.activitiesTracked.inc({ type });
-    metrics.totalCarbon.set(await Activity.aggregate([{ $group: { _id: null, sum: { $sum: '$co2Kg' } } }]).then((r) => (r[0] ? r[0].sum : 0)));
-    metrics.activeUsers.set(await Activity.distinct('userId').then((list) => list.length));
+    metrics.totalCarbon.inc(co2Kg);
+    metrics.activeUsers.set(await Activity.distinct('userId').then(list => list.length));
 
     end();
     res.status(201).json(activity);
@@ -131,7 +122,7 @@ app.get('/api/activities/:userId', async (req, res) => {
 app.get('/api/stats/:userId', async (req, res) => {
   const end = httpRequestDuration.startTimer({ route: '/api/stats/:userId', method: 'GET' });
   try {
-    const { userId } = req.params;
+    const userId = req.params.userId;
     const activities = await Activity.find({ userId }).lean();
     const totalCO2 = activities.reduce((s, a) => s + (a.co2Kg || 0), 0);
     const byType = activities.reduce((acc, cur) => {
@@ -150,7 +141,7 @@ app.get('/api/stats/:userId', async (req, res) => {
 app.get('/api/global-stats', async (req, res) => {
   const end = httpRequestDuration.startTimer({ route: '/api/global-stats', method: 'GET' });
   try {
-    const totalUsers = await Activity.distinct('userId').then((list) => list.length);
+    const totalUsers = await Activity.distinct('userId').then(list => list.length);
     const agg = await Activity.aggregate([{ $group: { _id: null, totalCO2: { $sum: '$co2Kg' }, count: { $sum: 1 } } }]);
     const totalCO2Kg = agg[0] ? agg[0].totalCO2 : 0;
     const activitiesCount = agg[0] ? agg[0].count : 0;
@@ -170,8 +161,10 @@ app.delete('/api/activities/:id', async (req, res) => {
     const removed = await Activity.findByIdAndDelete(req.params.id);
     // update gauges/counters (simple recalculation)
     const metrics = require('./metrics');
-    metrics.totalCarbon.set(await Activity.aggregate([{ $group: { _id: null, sum: { $sum: '$co2Kg' } } }]).then((r) => (r[0] ? r[0].sum : 0)));
-    metrics.activeUsers.set(await Activity.distinct('userId').then((list) => list.length));
+    if (removed?.co2Kg) {
+      metrics.totalCarbon.dec(removed.co2Kg);
+    }
+    metrics.activeUsers.set(await Activity.distinct('userId').then(list => list.length));
 
     end();
     if (!removed) return res.status(404).json({ error: 'Not found' });
